@@ -86,8 +86,6 @@ function write_inventory_csv(file_name, item_types)
 end
 
 function split_last_word(x)
-
-	print("split", x)
 	
 	local rev = string.reverse(x)
 	local i = string.find(rev, " ")
@@ -103,7 +101,6 @@ function split_last_word(x)
 	-- the string is in reverse order, so the front is the back
 	local back = string.reverse(string.sub(rev, 1, i-1))
 	local front = string.reverse(string.sub(rev, i+1, n))
-	print("split result = ", front, back)
 	return front, back
 end
 
