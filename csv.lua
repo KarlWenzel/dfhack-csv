@@ -55,7 +55,7 @@ function add_line_items(item_type, line_items)
 			end
 		end
 				
-		local line_item = ("%s,%s,%s,%s,%d,%s,%d,%d,%s,%d"):format(
+		local line_item = ("%s,%s,%s,%s,%f,%s,%d,%d,%s,%d"):format(
 			item_type,
 			short_desc,
 			mat,
@@ -85,6 +85,17 @@ function write_inventory_csv(file_name, item_types)
 	write_to_file(file_name, line_items)	
 end
 
+function matches_any(word, word_list)
+
+	for _,v in ipairs(word_list) do
+		if (word == v) then
+			return true
+		end
+	end
+	
+	return false
+end
+
 function split_last_word(x)
 	
 	local rev = string.reverse(x)
@@ -111,49 +122,88 @@ function coalesce_mat_types(mat)
 	local last_word = ""
 	_, last_word = split_last_word(mat)
 	
-	if (last_word == "bone") then
-		return "bone"
-	elseif (last_word == "leather") then
-		return "leather"
-	elseif (last_word == "wood") then
-		return "wood"
-	else
-		return mat
+	local mat_types = { "bone", "cloth", "leather", "wood" }
+	
+	for _,mat_type in ipairs(mat_types) do
+		if (last_word == mat_type) then
+			return mat_type
+		end
 	end
+	
+	return mat
 end
 
 function parseDescription(item_type, item)
 
-	local long_desc = dfhack.items.getDescription(item, 0, false)
-	long_desc = string.gsub(long_desc, "(%s<#%d+>)", "") -- get rid of the possible whatever this <#xx> designator is
-			
+	local raw_long_desc = dfhack.items.getDescription(item, 0, false)
+	raw_long_desc = string.gsub(raw_long_desc, ",", " ") -- remove commas. they mess up the CSV output
+	
+	local long_desc = string.gsub(raw_long_desc, "(%s<#%d+>)", "") -- get rid of any possible "<#xx>" designations
 	local short_desc = ""
 	local mat = "<unk>"
 	local count = 1
 	local contains_items = false
-	-- dfhack.items.getContainedItems(item)
-	-- dfhack.items.getContainer(v)	
+	local stored_items = ""
 	
-	if (item_type == "AMMO") then
-		for k,v in string.gmatch(long_desc, "([%a%s]+)%[(%d+)%]") do
-			count = v			
-		end
-		mat, short_desc = split_last_word(dfhack.items.getDescription(item, 2, false))
+	-- part 1: easy special cases
 	
-	elseif (item_type == "BARREL") then
-		short_desc = "barrel"
-		for k,v in string.gmatch(long_desc, "([%a%s%-]+)%(([%a%s%-]+)%)") do
-			mat = v
-			contains_items = true
-		end
-		if (not contains_items) then
-			mat,_ = split_last_word(long_desc) --remove trailing " barrel"
-		end
+	if (item_type == "BOULDER") then
+		return raw_long_desc, "rock", long_desc, 1, false
+	end
 		
+	if (item_type == "ROUGH") then
+		return raw_long_desc, "uncut gem", long_desc, 1, false
+	end
+	
+	if (long_desc == "coke") then
+		return raw_long_desc, "bars", "coke", 1, false
+	end
+	
+	-- TODO: "large pot" vs "pot, large"
+	-- TODO: gender on things like caged animals
+	
+	-- part 2: general cases
+
+	for k,v in string.gmatch(long_desc, "([%a%s]+)%[(%d+)%]") do
+		count = v
+		long_desc = string.gsub(dfhack.items.getDescription(item, 1, false), ",", " ")
+	end
+	
+	for k,v in string.gmatch(long_desc, "([%a%s%-]+)%s%(([%a%s%-]+)%)") do -- looking for a material pattern like "(dog leather)"
+		stored_items,short_desc = split_last_word(k)
+		mat = v
+		contains_items = true -- the material pattern with parentheses is used for containers
+	end	
+	
+	if (not contains_items) then
+		for k,v in string.gmatch(long_desc, "([%a%s%-]+)%s%(([%d%%]+)%)") do -- looking for pattern like "(64%)"
+			long_desc = k
+			count = tonumber(string.match(v,"%d+"))/100
+		end	
+		mat,short_desc = split_last_word(long_desc) 			
+	end
+	
+	-- part 3: postprocessing special cases
+	
+	if (item_type == "PLANT") then
+		mat = mat .. " " .. short_desc
+		short_desc = "plant"
+	end
+	
+	local mat_front = ""
+	local mat_back = ""	
+	mat_front, mat_back = split_last_word(mat)
+	
+	for _,v in ipairs({ "left", "right", "high", "low", "battle", "war" }) do
+		if (mat_back == v) then
+			mat = mat_front
+			short_desc = mat_back .. " " .. short_desc
+			break
+		end
 	end	
 	
 	mat = coalesce_mat_types(mat)
-	return long_desc, short_desc, mat, count, contains_items
+	return raw_long_desc, short_desc, mat, count, contains_items
 end
 
 local reports = {
@@ -167,15 +217,11 @@ local reports = {
 						  'SHEET','SKIN_TANNED','THREAD' }
 }
 
---reports = {["equipment.csv"] = { 'BARREL' }}
---reports = {["kit.csv"] = { 'AMMO' }, ["equipment.csv"] = { 'BARREL' }}
-
 for fname, item_types in pairs(reports) do
 	write_inventory_csv(fname, item_types)
 end
 
-
--- local item_type = "BARREL" --"AMMO"
+-- local item_type = "BARREL"
 -- local cond = {}
 -- itemtools.condition_type(cond, item_type)	
 -- local _, items, _ = itemtools.execute("count", cond, {verbose = true}, true)
@@ -185,24 +231,6 @@ end
 	-- print(short_desc, mat, count, contains_items)
 -- end
 
-
---[[
-	formatting issues: examples
-		dog soap (64%)
-		giraffe () cage (copper)	***male
-		giraffe () cage (tin)		***female
-		dwarven ale flask (silver)
-		copper right gauntlet
-		alpaca cheese [5]
-		giant cave spider silk cloth
-		rope reed cloth (80%)
-		dimple cup spawn Bag (giant cave spider silk)		
-		rock nuts Bag (pig tail)
-
-	formatting issues: fixed
-		Cheese Barrel (bayberry wood) <#35>
-	
-]]--
 
 
 
